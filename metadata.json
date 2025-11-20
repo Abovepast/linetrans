@@ -1,0 +1,11 @@
+{
+  "name": "Linetrans",
+  "description": "划词翻译扩展 - 英译中\n作者: wonaren",
+  "uuid": "linetrans@wonaren",
+  "shell-version": [
+    "49"
+  ],
+  "url": "https://github.com/wonaren/linetrans-extension",
+  "settings-schema": "org.gnome.shell.extensions.linetrans",
+  "preferences_ui": "prefs.js"
+}

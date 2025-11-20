@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.linetrans" path="/org/gnome/shell/extensions/linetrans/">
+    <key name="source-language" type="s">
+      <default>'en'</default>
+      <summary>Source language for translation</summary>
+      <description>The language to translate text from.</description>
+    </key>
+    <key name="target-language" type="s">
+      <default>'zh-Hans'</default>
+      <summary>Target language for translation</summary>
+      <description>The language to translate text into.</description>
+    </key>
+    <key name="show-notifications" type="b">
+      <default>true</default>
+      <summary>Show notifications</summary>
+      <description>Whether to show error notifications.</description>
+    </key>
+
+    <!-- Enable verbose debug logging in the GNOME Shell log -->
+    <key name="debug-mode" type="b">
+      <default>false</default>
+      <summary>Enable debug logging</summary>
+      <description>When enabled, the extension will print verbose logs to the journal.</description>
+    </key>
+
+    <!-- Whether translation is currently enabled (toggled via keybinding) -->
+    <key name="translation-enabled" type="b">
+      <default>true</default>
+      <summary>Translation enabled</summary>
+      <description>Toggle to enable or disable automatic translation.</description>
+    </key>
+
+    <!-- Keybinding to toggle translation on/off. GNOME Shell expects an array of accelerators. -->
+    <key name="toggle-shortcut" type="as">
+      <default>["&lt;Alt&gt;w"]</default>
+      <summary>Toggle translation shortcut</summary>
+      <description>Keyboard shortcut to toggle translation on and off. Example: &lt;Alt&gt;w</description>
+    </key>
+
+    <!-- Keybinding to trigger translation of current PRIMARY selection (no polling). -->
+    <key name="translate-shortcut" type="as">
+      <default>["&lt;Alt&gt;t"]</default>
+      <summary>Translate selection shortcut</summary>
+      <description>Keyboard shortcut to translate the currently selected (PRIMARY) text immediately. Example: &lt;Alt&gt;t</description>
+    </key>
+
+    <!-- Fall back to reading CLIPBOARD if PRIMARY selection is empty/unavailable (common on Wayland) -->
+    <key name="use-clipboard-fallback" type="b">
+      <default>true</default>
+      <summary>Use CLIPBOARD fallback</summary>
+      <description>If the PRIMARY selection is empty or unavailable, also try the CLIPBOARD buffer.</description>
+    </key>
+
+    <key name="api-service" type="s">
+      <default>'bing'</default>
+      <summary>Translation API Service</summary>
+      <description>The service to use for translation (bing, google, ai).</description>
+    </key>
+
+    <key name="ai-model" type="s">
+      <default>'tencent/Hunyuan-MT-7B'</default>
+      <summary>AI Model Name</summary>
+      <description>The model name to use for AI translation.</description>
+    </key>
+
+    <key name="ai-api-url" type="s">
+      <default>'https://api.siliconflow.cn/v1/chat/completions'</default>
+      <summary>AI API URL</summary>
+      <description>The API URL for AI translation service.</description>
+    </key>
+
+    <key name="ai-api-key" type="s">
+      <default>'sk-izynzcmxlritymsizygmsnktxoufbsqecswkmhqnujmnekux'</default>
+      <summary>AI API Key</summary>
+      <description>The API Key for AI translation service.</description>
+    </key>
+  </schema>
+</schemalist>
