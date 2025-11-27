@@ -1,2 +1,4 @@
 /Trash
+/.gitignore
 /target_device_info.txt
+/schemas/gschema.compiled
