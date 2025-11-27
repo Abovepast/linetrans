@@ -2,6 +2,7 @@
   "name": "Linetrans",
   "description": "划词翻译扩展 - 英译中\n作者: wonaren",
   "uuid": "linetrans@wonaren",
+  "version": 251127,
   "shell-version": [
     "49"
   ],

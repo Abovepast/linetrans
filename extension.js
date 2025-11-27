@@ -10,6 +10,7 @@ import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 import Soup from 'gi://Soup';
+import Pango from 'gi://Pango';
 
 const BING_URL = "https://cn.bing.com";
 const BING_TRANSLATOR_URL = "https://cn.bing.com/translator";
@@ -20,15 +21,24 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const MAX_CACHE_SIZE = 100;
 const POLL_INTERVAL_MS = 1000;       // Wayland下轮询间隔建议稍长，避免频繁读取空剪贴板
 const DEBOUNCE_DELAY_MS = 900;       // 增加防抖时间，等待用户完成选择动作
+const REQUEST_TIMEOUT_SECS = 30;     // 请求超时时间
+const BING_TOKEN_CACHE_MS = 10 * 60 * 1000; // Bing Token 缓存10分钟
 
-// 翻译缓存 (全局)
-const TRANSLATION_CACHE = new Map();
+// 翻译缓存 (实例级别，在 disable 时清理)
+let TRANSLATION_CACHE = new Map();
+
+// Bing Token 缓存
+let _bingTokenCache = null;
+let _bingTokenTimestamp = 0;
 
 // 简单的最近一次翻译对话框
 const LastTranslationDialog = GObject.registerClass(
 class LastTranslationDialog extends ModalDialog {
     _init(indicator) {
-        super._init({styleClass: 'linetrans-last-dialog'});
+        super._init({
+            styleClass: 'linetrans-last-dialog',
+            destroyOnClose: false,  // 不自动销毁，我们手动管理生命周期
+        });
         this._indicator = indicator;
 
         this._titleLabel = new St.Label({
@@ -41,16 +51,23 @@ class LastTranslationDialog extends ModalDialog {
         });
         this._originalText = new St.Label({
             text: '',
-            style: 'color: #ddd;'
+            style: 'color: #ddd;',
+            x_expand: true,
         });
+        this._originalText.clutter_text.set_line_wrap(true);
+        this._originalText.clutter_text.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR);
+        
         this._translationLabel = new St.Label({
             text: _('译文:'),
             style: 'font-weight: bold; margin-top: 10px;'
         });
         this._translationText = new St.Label({
             text: '',
-            style: 'color: #a3e635;'
+            style: 'color: #a3e635;',
+            x_expand: true,
         });
+        this._translationText.clutter_text.set_line_wrap(true);
+        this._translationText.clutter_text.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR);
 
         const box = new St.BoxLayout({
             vertical: true,
@@ -72,15 +89,32 @@ class LastTranslationDialog extends ModalDialog {
                         St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, txt);
                         Main.notify(_('已复制译文'), txt.substring(0, 120));
                     }
+                    this._safeClose();
                 },
                 key: Clutter.KEY_c,
             },
             {
                 label: _('关闭'),
-                action: () => this.close(),
+                action: () => this._safeClose(),
                 default: true,
             },
         ]);
+        
+        // 监听 ESC 键和点击外部区域关闭
+        this.connect('closed', () => {
+            // 确保焦点正确释放
+            global.stage.set_key_focus(null);
+        });
+    }
+
+    _safeClose() {
+        try {
+            this.close();
+        } catch (e) {
+            console.warn(`[Linetrans] Dialog close error: ${e.message}`);
+        }
+        // 强制释放键盘焦点
+        global.stage.set_key_focus(null);
     }
 
     updateContent(original, translation) {
@@ -109,7 +143,6 @@ class LinetransIndicator extends PanelMenu.Button {
         this._enabled = this._settings.get_boolean('translation-enabled');
         this._lastOriginal = null;
         this._lastTranslation = null;
-        this._historyDialog = null;
         this._isProcessing = false;
         this._currentRequest = null;
         this._useClipboardFallback = this._settings.get_boolean('use-clipboard-fallback');
@@ -122,6 +155,9 @@ class LinetransIndicator extends PanelMenu.Button {
             y_align: Clutter.ActorAlign.CENTER,
         });
         this.add_child(this._buttonText);
+        
+        // 存储 settings 信号连接 ID 以便清理（必须在使用前初始化）
+        this._settingsConnections = [];
         
         // 菜单项
         const translateNowItem = new PopupMenu.PopupMenuItem(_('立即翻译所选文本'));
@@ -156,7 +192,9 @@ class LinetransIndicator extends PanelMenu.Button {
             this._serviceItems.set(s.id, item);
         }
 
-        this._settings.connect('changed::api-service', () => this._updateServiceMenu());
+        this._settingsConnections.push(
+            this._settings.connect('changed::api-service', () => this._updateServiceMenu())
+        );
         this._updateServiceMenu();
 
         // 诊断剪贴板内容
@@ -174,6 +212,10 @@ class LinetransIndicator extends PanelMenu.Button {
         this._clipboard = St.Clipboard.get_default();
         // Gnome 45+ 推荐 TextEncoder
         this._encoder = new TextEncoder();
+        
+        // 复用 HTTP Session 以提高性能
+        this._httpSession = new Soup.Session();
+        this._httpSession.timeout = REQUEST_TIMEOUT_SECS;
         
         if (this._enabled) {
             // Wayland 下主要依赖轮询
@@ -208,17 +250,14 @@ class LinetransIndicator extends PanelMenu.Button {
     
     _normalizeText(text) {
         if (!text) return '';
-        if (text.length > 1000) text = text.substring(0, 1000);
-        // 移除首尾空白
-        let cleaned = String(text).trim();
-        // 将所有换行和多余空格替换为单个空格
-        cleaned = cleaned.replace(/[\r\n]+/g, ' ');
-        cleaned = cleaned.replace(/\s{2,}/g, ' ');
-        return cleaned;
+        // 限制长度，移除首尾空白，将所有换行和多余空格替换为单个空格
+        return String(text)
+            .substring(0, 1000)
+            .trim()
+            .replace(/[\r\n\s]+/g, ' ');
     }
     
     _request(method, url, headers = {}, body = null) {
-        const session = new Soup.Session();
         const message = Soup.Message.new(method, url);
         
         message.request_headers.append('User-Agent', USER_AGENT);
@@ -235,6 +274,7 @@ class LinetransIndicator extends PanelMenu.Button {
             message.set_request_body_from_bytes(contentType, new GLib.Bytes(bodyBytes));
         }
 
+        const session = this._httpSession;
         return new Promise((resolve, reject) => {
             session.send_and_read_async(
                 message,
@@ -261,6 +301,12 @@ class LinetransIndicator extends PanelMenu.Button {
     }
 
     async _getBingToken() {
+        // 检查缓存是否有效
+        const now = Date.now();
+        if (_bingTokenCache && (now - _bingTokenTimestamp) < BING_TOKEN_CACHE_MS) {
+            return _bingTokenCache;
+        }
+        
         const html = await this._request('GET', BING_TRANSLATOR_URL);
         
         let igMatch = html.match(/IG:"([A-Z0-9]+)"/);
@@ -276,7 +322,11 @@ class LinetransIndicator extends PanelMenu.Button {
         const paramsStr = `[${paramsMatch[1]}]`;
         const params = JSON.parse(paramsStr);
         
-        return { ig, iid, key: params[0], token: params[1] };
+        // 缓存 token
+        _bingTokenCache = { ig, iid, key: params[0], token: params[1] };
+        _bingTokenTimestamp = now;
+        
+        return _bingTokenCache;
     }
 
     _updateServiceMenu() {
@@ -392,8 +442,12 @@ class LinetransIndicator extends PanelMenu.Button {
         // 如果包含中文，则不进行翻译
         if (/[\u4e00-\u9fa5]/.test(text)) return;
 
-        if (TRANSLATION_CACHE.has(text)) {
-            const cached = TRANSLATION_CACHE.get(text);
+        const service = this._settings.get_string('api-service');
+        // 缓存 key 需要包含翻译服务，不同服务的翻译结果可能不同
+        const cacheKey = `${service}:${text}`;
+
+        if (TRANSLATION_CACHE.has(cacheKey)) {
+            const cached = TRANSLATION_CACHE.get(cacheKey);
             this._showTranslation(text, cached, 0);
             return;
         }
@@ -403,7 +457,6 @@ class LinetransIndicator extends PanelMenu.Button {
         this._buttonText.set_text('⏳');
 
         try {
-            const service = this._settings.get_string('api-service');
             let translation = null;
 
             if (service === 'google') {
@@ -415,7 +468,7 @@ class LinetransIndicator extends PanelMenu.Button {
             }
 
             if (translation) {
-                TRANSLATION_CACHE.set(text, translation);
+                TRANSLATION_CACHE.set(cacheKey, translation);
                 if (TRANSLATION_CACHE.size > MAX_CACHE_SIZE) {
                     TRANSLATION_CACHE.delete(TRANSLATION_CACHE.keys().next().value);
                 }
@@ -435,7 +488,10 @@ class LinetransIndicator extends PanelMenu.Button {
         try {
             let title = String(original);
             if (duration !== null) {
-                title = `译文耗时：${duration.toFixed(2)} S`;
+                // title = `翻译服务： 译文耗时：${duration.toFixed(2)} S`;
+                const svcId = this._settings.get_string('api-service') || 'bing';
+                const svcLabel = svcId === 'bing' ? 'Bing' : svcId === 'google' ? 'Google' : svcId === 'ai' ? 'AI' : svcId;
+                title = `${svcLabel} · 译文耗时 ${duration.toFixed(2)} S`;
             }
             const body = String(translation);
             Main.notify(title, body);
@@ -443,22 +499,17 @@ class LinetransIndicator extends PanelMenu.Button {
             this._lastOriginal = original;
             this._lastTranslation = body;
             // 成功显示后，更新去重标记
-            this._lastTranslatedText = original; 
-            
-            if (this._historyDialog) {
-                this._historyDialog.updateContent(original, body);
-            }
+            this._lastTranslatedText = original;
         } catch (e) {
             console.error(`[Linetrans] Notify Error: ${e.message}`);
         }
     }
 
     _openLastTranslationDialog() {
-        if (!this._historyDialog) {
-            this._historyDialog = new LastTranslationDialog(this);
-        }
-        this._historyDialog.updateContent(this._lastOriginal, this._lastTranslation);
-        this._historyDialog.open();
+        // 每次都创建新的对话框实例，避免 disposed 对象被重用的问题
+        const dialog = new LastTranslationDialog(this);
+        dialog.updateContent(this._lastOriginal, this._lastTranslation);
+        dialog.open();
     }
 
     _updateIndicatorStyle() {
@@ -548,14 +599,31 @@ class LinetransIndicator extends PanelMenu.Button {
 
     destroy() {
         this._stopPolling();
+        
         if (this._debounceTimeoutId) {
             GLib.source_remove(this._debounceTimeoutId);
             this._debounceTimeoutId = 0;
         }
+        
+        // 断开 settings 信号连接
+        if (this._settingsConnections) {
+            for (const id of this._settingsConnections) {
+                this._settings.disconnect(id);
+            }
+            this._settingsConnections = [];
+        }
+        
+        // 清理 HTTP Session
+        if (this._httpSession) {
+            this._httpSession.abort();
+            this._httpSession = null;
+        }
+        
         if (this._currentRequest) {
             try { this._currentRequest.force_keep_alive = false; } catch(e) {}
             this._currentRequest = null;
         }
+        
         super.destroy();
     }
 });
@@ -565,24 +633,47 @@ export default class LinetransExtension extends Extension {
         this._indicator = new LinetransIndicator(this);
         Main.panel.addToStatusArea('linetrans-indicator', this._indicator);
         
+        this._settings = this.getSettings();
+        
+        // 先尝试移除旧的快捷键绑定，避免重复添加
         try {
-            this._settings = this.getSettings();
+            Main.wm.removeKeybinding('toggle-shortcut');
+        } catch (e) { /* 忽略 */ }
+        try {
+            Main.wm.removeKeybinding('translate-shortcut');
+        } catch (e) { /* 忽略 */ }
+        
+        // 添加快捷键绑定
+        try {
             Main.wm.addKeybinding(
                 'toggle-shortcut',
                 this._settings,
                 Meta.KeyBindingFlags.NONE,
                 Shell.ActionMode.ALL,
-                () => this._indicator && this._indicator._toggleEnabled()
+                () => {
+                    if (this._indicator) {
+                        this._indicator._toggleEnabled();
+                    }
+                }
             );
+        } catch (e) {
+            console.warn(`[Linetrans] toggle-shortcut binding failed: ${e.message}`);
+        }
+        
+        try {
             Main.wm.addKeybinding(
                 'translate-shortcut',
                 this._settings,
                 Meta.KeyBindingFlags.NONE,
                 Shell.ActionMode.ALL,
-                () => this._indicator && this._indicator._readAndTranslateNow()
+                () => {
+                    if (this._indicator) {
+                        this._indicator._readAndTranslateNow();
+                    }
+                }
             );
         } catch (e) {
-            console.warn(`[Linetrans] Keybinding setup failed: ${e.message}`);
+            console.warn(`[Linetrans] translate-shortcut binding failed: ${e.message}`);
         }
     }
 
@@ -596,5 +687,10 @@ export default class LinetransExtension extends Extension {
             Main.wm.removeKeybinding('translate-shortcut');
             this._settings = null;
         } catch (e) {}
+        
+        // 清理全局缓存
+        TRANSLATION_CACHE.clear();
+        _bingTokenCache = null;
+        _bingTokenTimestamp = 0;
     }
 }

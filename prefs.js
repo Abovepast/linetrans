@@ -82,20 +82,129 @@ export default class LinetransPreferences extends ExtensionPreferences {
         
         const shortcutGroup = new Adw.PreferencesGroup({
             title: _('快捷键'),
-            description: _('自定义翻译功能开关的全局快捷键。'),
+            description: _('点击按钮后按下组合键来设置快捷键。'),
         });
         page.add(shortcutGroup);
 
-        const shortcutRow = new Adw.EntryRow({
-            title: _('翻译开关快捷键'),
-        });
-        shortcutRow.set_subtitle ? shortcutRow.set_subtitle(_("例如 '&lt;Alt&gt;w'")) : null;
+        // 创建快捷键设置行的辅助函数
+        const createShortcutRow = (title, settingsKey) => {
+            const row = new Adw.ActionRow({
+                title: title,
+            });
+
+            const shortcutLabel = new Gtk.ShortcutLabel({
+                disabled_text: _('未设置'),
+                valign: Gtk.Align.CENTER,
+            });
+
+            const editButton = new Gtk.Button({
+                icon_name: 'preferences-desktop-keyboard-shortcuts-symbolic',
+                valign: Gtk.Align.CENTER,
+                tooltip_text: _('点击后按下新的快捷键'),
+            });
+
+            const clearButton = new Gtk.Button({
+                icon_name: 'edit-clear-symbolic',
+                valign: Gtk.Align.CENTER,
+                tooltip_text: _('清除快捷键'),
+            });
+
+            row.add_suffix(shortcutLabel);
+            row.add_suffix(editButton);
+            row.add_suffix(clearButton);
+
+            // 更新显示
+            const updateLabel = () => {
+                const arr = this._settings.get_strv(settingsKey);
+                shortcutLabel.accelerator = arr.length > 0 ? arr[0] : null;
+            };
+            updateLabel();
+
+            this._settings.connect(`changed::${settingsKey}`, updateLabel);
+
+            // 清除按钮
+            clearButton.connect('clicked', () => {
+                this._settings.set_strv(settingsKey, []);
+            });
+
+            // 编辑按钮 - 打开快捷键捕获对话框
+            editButton.connect('clicked', () => {
+                const dialog = new Gtk.Dialog({
+                    title: _('按下快捷键'),
+                    transient_for: window,
+                    modal: true,
+                    default_width: 300,
+                    default_height: 150,
+                });
+
+                const contentArea = dialog.get_content_area();
+                contentArea.spacing = 12;
+                contentArea.margin_top = 12;
+                contentArea.margin_bottom = 12;
+                contentArea.margin_start = 12;
+                contentArea.margin_end = 12;
+
+                const label = new Gtk.Label({
+                    label: _('请按下您想要设置的快捷键组合...'),
+                    wrap: true,
+                });
+                contentArea.append(label);
+
+                const previewLabel = new Gtk.ShortcutLabel({
+                    disabled_text: _('等待输入...'),
+                    halign: Gtk.Align.CENTER,
+                });
+                contentArea.append(previewLabel);
+
+                const cancelButton = dialog.add_button(_('取消'), Gtk.ResponseType.CANCEL);
+
+                // 键盘事件控制器
+                const keyController = new Gtk.EventControllerKey();
+                dialog.add_controller(keyController);
+
+                keyController.connect('key-pressed', (controller, keyval, keycode, state) => {
+                    // 过滤掉单独的修饰键
+                    const modifierKeys = [
+                        Gtk.accelerator_parse('Shift_L')[1],
+                        Gtk.accelerator_parse('Shift_R')[1],
+                        Gtk.accelerator_parse('Control_L')[1],
+                        Gtk.accelerator_parse('Control_R')[1],
+                        Gtk.accelerator_parse('Alt_L')[1],
+                        Gtk.accelerator_parse('Alt_R')[1],
+                        Gtk.accelerator_parse('Super_L')[1],
+                        Gtk.accelerator_parse('Super_R')[1],
+                        Gtk.accelerator_parse('Meta_L')[1],
+                        Gtk.accelerator_parse('Meta_R')[1],
+                    ];
+
+                    if (modifierKeys.includes(keyval)) {
+                        return false;
+                    }
+
+                    // 获取修饰键状态
+                    let mods = state & Gtk.accelerator_get_default_mod_mask();
+
+                    // 生成加速器字符串
+                    const accelerator = Gtk.accelerator_name(keyval, mods);
+
+                    if (accelerator) {
+                        this._settings.set_strv(settingsKey, [accelerator]);
+                        dialog.close();
+                    }
+
+                    return true;
+                });
+
+                dialog.present();
+            });
+
+            return row;
+        };
+
+        const shortcutRow = createShortcutRow(_('翻译开关快捷键'), 'toggle-shortcut');
         shortcutGroup.add(shortcutRow);
 
-        const translateShortcutRow = new Adw.EntryRow({
-            title: _('立即翻译快捷键'),
-        });
-        translateShortcutRow.set_subtitle ? translateShortcutRow.set_subtitle(_("例如 '&lt;Alt&gt;t'")) : null;
+        const translateShortcutRow = createShortcutRow(_('立即翻译快捷键'), 'translate-shortcut');
         shortcutGroup.add(translateShortcutRow);
 
         this._settings.bind('source-language', sourceLangRow, 'text', Gio.SettingsBindFlags.DEFAULT);
@@ -129,29 +238,5 @@ export default class LinetransPreferences extends ExtensionPreferences {
 
         this._settings.bind('use-clipboard-fallback', fallbackRow, 'active', Gio.SettingsBindFlags.DEFAULT);
     this._settings.bind('debug-mode', debugRow, 'active', Gio.SettingsBindFlags.DEFAULT);
-        // toggle-shortcut 是 as 类型（数组），这里只简单用单个字符串输入进行设置
-        this._settings.connect('changed::toggle-shortcut', () => {
-            const arr = this._settings.get_strv('toggle-shortcut');
-            shortcutRow.text = arr.length > 0 ? arr[0] : '';
-        });
-        shortcutRow.connect('notify::text', row => {
-            const val = row.text.trim();
-            this._settings.set_strv('toggle-shortcut', val ? [val] : []);
-        });
-        // 初始化一次
-        const initial = this._settings.get_strv('toggle-shortcut');
-        shortcutRow.text = initial.length > 0 ? initial[0] : '';
-
-        // translate-shortcut
-        this._settings.connect('changed::translate-shortcut', () => {
-            const arr = this._settings.get_strv('translate-shortcut');
-            translateShortcutRow.text = arr.length > 0 ? arr[0] : '';
-        });
-        translateShortcutRow.connect('notify::text', row => {
-            const val = row.text.trim();
-            this._settings.set_strv('translate-shortcut', val ? [val] : []);
-        });
-        const initialTranslate = this._settings.get_strv('translate-shortcut');
-        translateShortcutRow.text = initialTranslate.length > 0 ? initialTranslate[0] : '';
     }
 }
