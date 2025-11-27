@@ -1,12 +1,12 @@
 {
   "name": "Linetrans",
-  "description": "划词翻译扩展 - 英译中\n作者: wonaren",
-  "uuid": "linetrans@wonaren",
+  "description": "划词翻译扩展 - 英译中\n作者: Abovepast\n功能: 选中英文单词或句子后，选中或按下快捷键即可弹出翻译结果。\n支持多种翻译引擎，Bing, Google, AI API。",
+  "uuid": "linetrans@Abovepast",
   "version": 251127,
   "shell-version": [
     "49"
   ],
-  "url": "https://github.com/wonaren/linetrans-extension",
+  "url": "https://github.com/Abovepast/linetrans",
   "settings-schema": "org.gnome.shell.extensions.linetrans",
   "preferences_ui": "prefs.js"
 }
